@@ -3,16 +3,48 @@ use std::io::net::get_host_addresses;
 use std::io::net::tcp::TcpStream;
 use std::from_str::from_str;
 
-use extra::url::Url;
+use url::Url;
 
 use enums::*;
 use connection::Connection;
 
-mod macros;
+macro_rules! ensure {
+    ($expr:expr, $err_result:expr) => (
+        if !($expr) { return $err_result; }
+    )
+}
+
+macro_rules! try_unwrap {
+    ($expr:expr, $err_result:expr) => (
+        match $expr {
+            Some(x) => x,
+            None => { return $err_result },
+        }
+    )
+}
+
+
+macro_rules! try_unwrap_result {
+    ($expr:expr, $err_result:expr) => (
+        match $expr {
+            Ok(x) => x,
+            Err(_) => { return $err_result },
+        }
+    )
+}
+
+macro_rules! push_byte_format {
+    ($container:expr, $($arg:tt)*) => ({
+        let encoded = format!($($arg)*);
+        push_bytes($container, encoded.as_bytes());
+    })
+}
+
+
 
 pub struct Client {
-    priv addr: SocketAddr,
-    priv db: i64,
+    addr: SocketAddr,
+    db: i64,
 }
 
 impl Client {
@@ -22,16 +54,15 @@ impl Client {
     /// resolution currently only happens initially.
     pub fn open(uri: &str) -> Result<Client, ConnectFailure> {
         let parsed_uri = try_unwrap!(from_str::<Url>(uri), Err(InvalidURI));
-        ensure!(parsed_uri.scheme == ~"redis", Err(InvalidURI));
+        ensure!(parsed_uri.scheme == "redis".to_string(), Err(InvalidURI));
 
-        let ip_addrs = match get_host_addresses(parsed_uri.host) {
+        let ip_addrs = match get_host_addresses(parsed_uri.host.as_slice()) {
             Ok(x) => x,
             Err(_) => { return Err(InvalidURI); }
         };
         let ip_addr = try_unwrap!(ip_addrs.iter().next(), Err(HostNotFound));
-        let port = try_unwrap!(from_str::<u16>(parsed_uri.port.clone()
-            .unwrap_or(~"6379")), Err(InvalidURI));
-        let db = from_str::<i64>(parsed_uri.path.trim_chars(&'/')).unwrap_or(0);
+        let port = match parsed_uri.port { Some(x) => { x } _ => { 6379 } }; //try_unwrap!(parsed_uri.port.clone().unwrap_or(6379), Err(InvalidURI));
+        let db = from_str::<i64>(parsed_uri.path.path.as_slice().trim_chars('/')).unwrap_or(0);
 
         let addr = SocketAddr {
             ip: *ip_addr,
@@ -39,7 +70,7 @@ impl Client {
         };
 
         // make sure we can connect.
-        match TcpStream::connect(addr) {
+        match TcpStream::connect_timeout(addr, 5000) {
             Err(_) => { return Err(ConnectionRefused); }
             Ok(_) => {}
         }

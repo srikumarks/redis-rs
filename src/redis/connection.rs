@@ -1,31 +1,60 @@
 use std::io::Reader;
 use std::io::Writer;
-use std::vec::bytes::push_bytes;
-use std::str::{from_utf8, from_utf8_owned};
+//use std::vec::bytes::push_bytes;
+use std::str::{from_utf8};//, from_utf8_owned};
 use std::io::net::ip::SocketAddr;
-use std::container::Map;
-use collections::HashMap;
+use std::collections::Map;
+use std::collections::hashmap::HashMap;
 use std::io::net::tcp::TcpStream;
+//use std::iter::FromIterator;
 
 use time;
 use parser::Parser;
 use enums::*;
 use script::Script;
 use parser::ByteIterator;
-use scan::ScanIterator;
+use std::from_str::FromStr;
+pub use scan::ScanIterator;
 
-mod macros;
 
+macro_rules! ensure {
+    ($expr:expr, $err_result:expr) => (
+        if !($expr) { return $err_result; }
+    )
+}
 
-fn value_to_string_list(val: Value) -> ~[~str] {
+macro_rules! try_unwrap {
+    ($expr:expr, $err_result:expr) => (
+        match $expr {
+            Some(x) => x,
+            None => { return $err_result },
+        }
+    )
+}
+
+macro_rules! push_byte_format {
+    ($container:expr, $($arg:tt)*) => ({
+        let encoded = format!($($arg)*);
+        $container.push_all(encoded.as_bytes());
+//        push_bytes($container, encoded.as_bytes());
+    })
+}
+
+fn iter_to_vec<T, U : Iterator<T>>(i : U) -> Vec<T> {
+    let mut v = vec![];
+    v.extend(i);
+    v
+}
+
+fn value_to_string_list(val: Value) -> Vec<String> {
     match val {
         Bulk(items) => {
-            let mut rv = ~[];
+            let mut rv = vec![];
             for item in items.iter() {
                 match item {
                     &Data(ref payload) => {
-                        match from_utf8(*payload) {
-                            Some(x) => { rv.push(x.to_owned()); }
+                        match from_utf8(payload.as_slice()) {
+                            Some(x) => { rv.push(x.to_string()); }
                             None => {}
                         }
                     },
@@ -34,41 +63,41 @@ fn value_to_string_list(val: Value) -> ~[~str] {
             }
             rv
         },
-        _ => ~[],
+        _ => vec![],
     }
 }
 
-fn value_to_byte_list(val: Value) -> ~[~[u8]] {
+fn value_to_byte_list(val: Value) -> Vec<Vec<u8>> {
     match val {
         Bulk(items) => {
-            let mut rv = ~[];
+            let mut rv = vec![];
             for item in items.iter() {
                 match item {
                     &Data(ref payload) => {
-                        rv.push(payload.to_owned());
+                        rv.push(payload.to_vec());
                     },
                     _ => {}
                 }
             }
             rv
         },
-        _ => ~[],
+        _ => vec![],
     }
 }
 
-fn value_to_key_value_tuple(val: Value) -> Option<(~str, ~[u8])> {
+fn value_to_key_value_tuple(val: Value) -> Option<(String, Vec<u8>)> {
     match val {
         Bulk(items) => {
             let mut iter = items.iter();
             let key = match try_unwrap!(iter.next(), None) {
                 &Data(ref payload) => {
-                    (try_unwrap!(from_utf8(*payload), None)).to_owned()
+                    (try_unwrap!(from_utf8(payload.as_slice()), None)).to_string()
                 },
                 _ => { return None; }
             };
             let value = match try_unwrap!(iter.next(), None) {
                 &Data(ref payload) => {
-                    payload.to_owned()
+                    payload.to_vec()
                 },
                 _ => { return None; }
             };
@@ -81,7 +110,7 @@ fn value_to_key_value_tuple(val: Value) -> Option<(~str, ~[u8])> {
 fn string_value_convert<T: FromStr>(val: Value, default: T) -> T {
     match val {
         Data(ref x) => {
-            match from_str(try_unwrap!(from_utf8(*x), default)) {
+            match from_str(try_unwrap!(from_utf8(x.as_slice()), default)) {
                 Some(x) => x,
                 None => default,
             }
@@ -90,17 +119,17 @@ fn string_value_convert<T: FromStr>(val: Value, default: T) -> T {
     }
 }
 
-fn value_to_bytes(val: Value) -> Option<~[u8]> {
+fn value_to_bytes(val: Value) -> Option<Vec<u8>> {
     match val {
-        Data(ref x) => Some(x.to_owned()),
+        Data(ref x) => Some(x.to_vec()),
         _ => None,
     }
 }
 
-fn value_to_byte_float_tuples(val: Value) -> ~[(~[u8], f32)] {
+fn value_to_byte_float_tuples(val: Value) -> Vec<(Vec<u8>, f32)> {
     match val {
         Bulk(items) => {
-            let mut rv = ~[];
+            let mut rv = vec![];
             let mut iter = items.move_iter();
             loop {
                 let member = match iter.next().unwrap_or(Nil).get_bytes() {
@@ -112,20 +141,20 @@ fn value_to_byte_float_tuples(val: Value) -> ~[(~[u8], f32)] {
             }
             rv
         },
-        _ => ~[],
+        _ => vec![],
     }
 }
 
 pub struct Connection {
-    priv addr: SocketAddr,
-    priv sock: TcpStream,
-    priv db: i64,
+    addr: SocketAddr,
+    sock: TcpStream,
+    db: i64,
 }
 
 impl Connection {
 
     pub fn new(addr: SocketAddr, db: i64) -> Result<Connection, ConnectFailure> {
-        let sock = match TcpStream::connect(addr) {
+        let sock = match TcpStream::connect_timeout(addr, 5000) {
             Ok(x) => x,
             Err(_) => { return Err(ConnectionRefused) },
         };
@@ -143,33 +172,38 @@ impl Connection {
         Ok(rv)
     }
 
-    fn pack_command(&self, cmd: &str, args: &[CmdArg]) -> ~[u8] {
-        let mut rv = ~[];
+    fn pack_command(&self, cmd: &str, args: &[CmdArg]) -> Vec<u8> {
+        let mut rv = vec![];
         push_byte_format!(&mut rv, "*{}\r\n", args.len() + 1);
 
         push_byte_format!(&mut rv, "${}\r\n", cmd.len());
-        push_bytes(&mut rv, cmd.as_bytes());
-        push_bytes(&mut rv, bytes!("\r\n"));
+  
+        rv.push_all(cmd.as_bytes());
+        rv.push_all(b"\r\n");
+//        push_bytes(&mut rv, cmd.as_bytes());
+//        push_bytes(&mut rv, b"\r\n");
 
         for arg in args.iter() {
             let mut buf;
             let encoded_arg = match arg {
                 &StrArg(s) => s.as_bytes(),
                 &IntArg(i) => {
-                    let i_str = i.to_str();
-                    buf = i_str.as_bytes().to_owned();
+                    let i_str = format!("{}",i);//.to_str();
+                    buf = i_str.as_bytes().to_vec();
                     buf.as_slice()
                 },
                 &FloatArg(f) => {
-                    let f_str = f.to_str();
-                    buf = f_str.as_bytes().to_owned();
+                    let f_str = format!("{}",f);//f.to_str();
+                    buf = f_str.as_bytes().to_vec();
                     buf.as_slice()
                 },
                 &BytesArg(b) => b,
             };
             push_byte_format!(&mut rv, "${}\r\n", encoded_arg.len());
-            push_bytes(&mut rv, encoded_arg);
-            push_bytes(&mut rv, bytes!("\r\n"));
+            rv.push_all(encoded_arg);
+            rv.push_all(b"\r\n");
+//            push_bytes(&mut rv, encoded_arg);
+//            push_bytes(&mut rv, b"\r\n");
         }
 
         rv
@@ -179,7 +213,7 @@ impl Connection {
         let cmd = self.pack_command(cmd, args);
         let w = &mut self.sock as &mut Writer;
         // XXX: error checking
-        let _ = w.write(cmd);
+        let _ = w.write(cmd.as_slice());
     }
 
     pub fn read_response(&mut self) -> Value {
@@ -218,31 +252,31 @@ impl Connection {
 
     pub fn ping(&mut self) -> bool {
         match self.execute("PING", []) {
-            Status(~"PONG") => true,
+            Status(pong) => if pong == "PONG".to_string() { true } else { false }, //) => true,
             _ => false,
         }
     }
 
-    pub fn info(&mut self) -> ~Map<~str, ~str> {
-        let mut rv = ~HashMap::new();
+    pub fn info(&mut self) -> Box<Map<String, String>> {
+        let mut rv = box HashMap::new();
         match self.execute("INFO", []) {
             Data(bytes) => {
-                for line in from_utf8(bytes).unwrap_or("").lines_any() {
-                    if line.len() == 0 || line[0] == '#' as u8 {
+                for line in from_utf8(bytes.as_slice()).unwrap_or("").lines_any() {
+                    if line.len() == 0 || line.char_at(0) == '#' {
                         continue;
                     }
                     let mut p = line.splitn(':', 1);
                     let key = p.next();
                     let value = p.next();
                     if value.is_some() {
-                        rv.insert(key.unwrap().to_owned(),
-                                  value.unwrap().to_owned());
+                        rv.insert(key.unwrap().to_string(),
+                                  value.unwrap().to_string());
                     }
                 }
             },
             _ => {}
         };
-        rv as ~Map<~str, ~str>
+        rv as Box<Map<String, String>>
     }
 
     pub fn bgsave(&mut self) -> bool {
@@ -304,11 +338,11 @@ impl Connection {
 
     pub fn shutdown(&mut self, mode: ShutdownMode) {
         let args = match mode {
-            ShutdownNormal => ~[],
-            ShutdownSave => ~[StrArg("SAVE")],
-            ShutdownNoSave => ~[StrArg("NOSAVE")],
+            ShutdownNormal => vec![],
+            ShutdownSave => vec![StrArg("SAVE")],
+            ShutdownNoSave => vec![StrArg("NOSAVE")],
         };
-        self.send_command("SHUTDOWN", args);
+        self.send_command("SHUTDOWN", args.as_slice());
         // try to read a response but expect this to fail.
         self.read_response();
     }
@@ -320,21 +354,21 @@ impl Connection {
     // -- key commands
 
     #[inline]
-    pub fn keys(&mut self, pattern: &str) -> ~[~str] {
+    pub fn keys(&mut self, pattern: &str) -> Vec<String> {
         let resp = self.execute("KEYS", [StrArg(pattern)]);
         value_to_string_list(resp)
     }
 
     #[inline]
-    pub fn scan<'a>(&'a mut self, pattern: &'a str) -> ScanIterator<'a, ~str> {
+    pub fn scan<'a>(&'a mut self, pattern: &'a str) -> ScanIterator<'a, String> {
         ScanIterator {
             con: self,
             cmd: "SCAN",
-            pre_args: ~[],
-            post_args: ~[StrArg("MATCH"), StrArg(pattern)],
+            pre_args: vec![],
+            post_args: vec!(StrArg("MATCH"), StrArg(pattern)),
             cursor: 0,
-            conv_func: |value| Some(string_value_convert(value, ~"")),
-            buffer: ~[],
+            conv_func: |value| Some(string_value_convert(value, "".to_string())),
+            buffer: vec![],
             end: false,
         }
     }
@@ -417,7 +451,7 @@ impl Connection {
 
     #[inline]
     pub fn load_script(&mut self, script: &Script) -> bool {
-        match self.execute("SCRIPT", [StrArg("LOAD"), BytesArg(script.code)]) {
+        match self.execute("SCRIPT", [StrArg("LOAD"), BytesArg(script.code.as_slice())]) {
             Data(_) => true,
             _ => false,
         }
@@ -425,12 +459,12 @@ impl Connection {
 
     pub fn call_script<'a>(&mut self, script: &'a Script,
                            keys: &[&'a str], args: &[CmdArg<'a>]) -> Value {
-        let mut all_args = ~[StrArg(script.sha), IntArg(keys.len() as i64)];
-        all_args.extend(&mut keys.iter().map(|&x| StrArg(x)));
+        let mut all_args = vec![StrArg(script.sha.as_slice()), IntArg(keys.len() as i64)];
+        //all_args.extend(&mut keys.iter().map(|&x| StrArg(x)));
         all_args.push_all(args);
 
         loop {
-            match self.execute("EVALSHA", all_args) {
+            match self.execute("EVALSHA", all_args.as_slice()) {
                 Error(code, msg) => {
                     match code {
                         NoScriptError => {
@@ -457,7 +491,7 @@ impl Connection {
     // -- key / value commands
 
     #[inline]
-    pub fn get_bytes(&mut self, key: &str) -> Option<~[u8]> {
+    pub fn get_bytes(&mut self, key: &str) -> Option<Vec<u8>> {
         match self.execute("GET", [StrArg(key)]) {
             Data(value) => Some(value),
             _ => None,
@@ -465,10 +499,10 @@ impl Connection {
     }
 
     #[inline]
-    pub fn get(&mut self, key: &str) -> Option<~str> {
+    pub fn get(&mut self, key: &str) -> Option<String> {
         match self.get_bytes(key) {
             None => None,
-            Some(x) => from_utf8_owned(x),
+            Some(x) => match String::from_utf8(x) { Ok(x) => Some(x), Err(_) => None },
         }
     }
 
@@ -476,7 +510,7 @@ impl Connection {
     pub fn get_as<T: FromStr>(&mut self, key: &str) -> Option<T> {
         match self.get(key) {
             None => None,
-            Some(x) => from_str(x),
+            Some(x) => from_str(x.as_slice()),
         }
     }
 
@@ -491,7 +525,7 @@ impl Connection {
     #[inline]
     pub fn set<T: ToStr>(&mut self, key: &str, value: T) -> bool {
         let v = value.to_str();
-        match self.execute("SET", [StrArg(key), StrArg(v)]) {
+        match self.execute("SET", [StrArg(key), StrArg(v.as_slice())]) {
             Success => true,
             _ => false,
         }
@@ -532,7 +566,7 @@ impl Connection {
     #[inline]
     pub fn setnx<T: ToStr>(&mut self, key: &str, value: T) -> bool {
         let v = value.to_str();
-        match self.execute("SETNX", [StrArg(key), StrArg(v)]) {
+        match self.execute("SETNX", [StrArg(key), StrArg(v.as_slice())]) {
             Int(1) => true,
             _ => false,
         }
@@ -549,15 +583,15 @@ impl Connection {
 
     #[inline]
     pub fn del_many(&mut self, keys: &[&str]) -> uint {
-        let args = keys.iter().map(|&x| StrArg(x)).to_owned_vec();
-        match self.execute("DEL", args) {
+        let args = iter_to_vec(keys.iter().map(|&x| StrArg(x)));
+        match self.execute("DEL", args.as_slice()) {
             Int(x) => x as uint,
             _ => 0,
         }
     }
 
     #[inline]
-    pub fn getset_bytes(&mut self, key: &str, value: &[u8]) -> Option<~[u8]> {
+    pub fn getset_bytes(&mut self, key: &str, value: &[u8]) -> Option<Vec<u8>> {
         match self.execute("GETSET", [StrArg(key), BytesArg(value)]) {
             Data(value) => Some(value),
             _ => None,
@@ -568,7 +602,7 @@ impl Connection {
     pub fn getset<T: ToStr+FromStr>(&mut self, key: &str, value: T) -> Option<T> {
         let v = value.to_str();
         match self.getset_bytes(key, v.as_bytes()) {
-            Some(x) => from_str(from_utf8_owned(x).unwrap_or(~"")),
+            Some(x) => from_str(String::from_utf8(x).unwrap_or("".to_string()).as_slice()),
             None => None,
         }
     }
@@ -605,16 +639,16 @@ impl Connection {
     }
 
     #[inline]
-    pub fn getrange_bytes(&mut self, key: &str, start: i64, end: i64) -> ~[u8] {
+    pub fn getrange_bytes(&mut self, key: &str, start: i64, end: i64) -> Vec<u8> {
         match self.execute("GETRANGE", [StrArg(key), IntArg(start), IntArg(end)]) {
             Data(value) => value,
-            _ => ~[],
+            _ => vec![],
         }
     }
 
     #[inline]
-    pub fn getrange(&mut self, key: &str, start: i64, end: i64) -> ~str {
-        from_utf8_owned(self.getrange_bytes(key, start, end)).unwrap_or(~"")
+    pub fn getrange(&mut self, key: &str, start: i64, end: i64) -> String {
+        String::from_utf8(self.getrange_bytes(key, start, end)).unwrap_or("".to_string())
     }
 
     #[inline]
@@ -701,89 +735,89 @@ impl Connection {
 
     #[inline]
     fn blocking_pop_bytes(&mut self, cmd: &str, keys: &[&str],
-                          timeout: f32) -> Option<(~str, ~[u8])> {
+                          timeout: f32) -> Option<(String, Vec<u8>)> {
         let mut timeout_s = timeout as i64;
         if timeout_s <= 0 {
             timeout_s = 0;
         }
-        let mut args = keys.iter().map(|&x| StrArg(x)).to_owned_vec();
+        let mut args = iter_to_vec(keys.iter().map(|&x| StrArg(x)));
         args.push(IntArg(timeout_s));
-        value_to_key_value_tuple(self.execute(cmd, args))
+        value_to_key_value_tuple(self.execute(cmd, args.as_slice()))
     }
 
     #[inline]
-    pub fn blpop_bytes(&mut self, keys: &[&str], timeout: f32) -> Option<(~str, ~[u8])> {
+    pub fn blpop_bytes(&mut self, keys: &[&str], timeout: f32) -> Option<(String, Vec<u8>)> {
         self.blocking_pop_bytes("BLPOP", keys, timeout)
     }
 
     #[inline]
-    pub fn blpop(&mut self, keys: &[&str], timeout: f32) -> Option<(~str, ~str)> {
+    pub fn blpop(&mut self, keys: &[&str], timeout: f32) -> Option<(String, String)> {
         match self.blpop_bytes(keys, timeout) {
             Some((key, value)) => {
-                Some((key, from_utf8_owned(value).unwrap_or(~"")))
+                Some((key, String::from_utf8(value).unwrap_or("".to_string())))
             },
             None => None
         }
     }
 
     #[inline]
-    pub fn blpop_as<T: FromStr>(&mut self, keys: &[&str], timeout: f32) -> Option<(~str, T)> {
+    pub fn blpop_as<T: FromStr>(&mut self, keys: &[&str], timeout: f32) -> Option<(String, T)> {
         match self.blpop(keys, timeout) {
             Some((key, value)) => {
-                Some((key, try_unwrap!(from_str(value), None)))
+                Some((key, try_unwrap!(from_str(value.as_slice()), None)))
             },
             None => None
         }
     }
 
     #[inline]
-    pub fn brpop_bytes(&mut self, keys: &[&str], timeout: f32) -> Option<(~str, ~[u8])> {
+    pub fn brpop_bytes(&mut self, keys: &[&str], timeout: f32) -> Option<(String, Vec<u8>)> {
         self.blocking_pop_bytes("BRPOP", keys, timeout)
     }
 
     #[inline]
-    pub fn brpop(&mut self, keys: &[&str], timeout: f32) -> Option<(~str, ~str)> {
+    pub fn brpop(&mut self, keys: &[&str], timeout: f32) -> Option<(String, String)> {
         match self.brpop_bytes(keys, timeout) {
             Some((key, value)) => {
-                Some((key, from_utf8_owned(value).unwrap_or(~"")))
+                Some((key, String::from_utf8(value).unwrap_or("".to_string())))
             },
             None => None
         }
     }
 
     #[inline]
-    pub fn brpop_as<T: FromStr>(&mut self, keys: &[&str], timeout: f32) -> Option<(~str, T)> {
+    pub fn brpop_as<T: FromStr>(&mut self, keys: &[&str], timeout: f32) -> Option<(String, T)> {
         match self.brpop(keys, timeout) {
             Some((key, value)) => {
-                Some((key, try_unwrap!(from_str(value), None)))
+                Some((key, try_unwrap!(from_str(value.as_slice()), None)))
             },
             None => None
         }
     }
 
     #[inline]
-    pub fn brpoplpush_bytes(&mut self, src: &str, dst: &str, timeout: f32) -> Option<~[u8]> {
+    pub fn brpoplpush_bytes(&mut self, src: &str, dst: &str, timeout: f32) -> Option<Vec<u8>> {
         let mut timeout_s = timeout as i64;
         if timeout_s <= 0 {
             timeout_s = 0;
         }
         match self.execute("BRPOPLPUSH", [StrArg(src), StrArg(dst),
                                           IntArg(timeout_s)]) {
-            Data(ref payload) => Some(payload.to_owned()),
+            Data(ref payload) => Some(payload.to_vec()),
             _ => None,
         }
     }
 
     #[inline]
-    pub fn brpoplpush(&mut self, src: &str, dst: &str, timeout: f32) -> Option<~str> {
+    pub fn brpoplpush(&mut self, src: &str, dst: &str, timeout: f32) -> Option<String> {
         match self.brpoplpush_bytes(src, dst, timeout) {
-            Some(x) => from_utf8_owned(x),
+            Some(x) => match String::from_utf8(x) { Ok(s) => Some(s), Err(_) => None },
             None => None,
         }
     }
 
     #[inline]
-    pub fn lindex_bytes(&mut self, key: &str, index: i64) -> Option<~[u8]> {
+    pub fn lindex_bytes(&mut self, key: &str, index: i64) -> Option<Vec<u8>> {
         match self.execute("LINDEX", [StrArg(key), IntArg(index)]) {
             Data(value) => Some(value),
             _ => None,
@@ -791,9 +825,9 @@ impl Connection {
     }
 
     #[inline]
-    pub fn lindex(&mut self, key: &str, index: i64) -> Option<~str> {
+    pub fn lindex(&mut self, key: &str, index: i64) -> Option<String> {
         match self.lindex_bytes(key, index) {
-            Some(x) => from_utf8_owned(x),
+            Some(x) => match String::from_utf8(x) { Ok(s) => Some(s), _ => None },
             None => None,
         }
     }
@@ -801,7 +835,7 @@ impl Connection {
     #[inline]
     pub fn lindex_as<T: FromStr>(&mut self, key: &str, index: i64) -> Option<T> {
         match self.lindex(key, index) {
-            Some(x) => from_str(x),
+            Some(x) => from_str(x.as_slice()),
             None => None,
         }
     }
@@ -846,7 +880,7 @@ impl Connection {
     }
 
     #[inline]
-    pub fn lpop_bytes(&mut self, key: &str) -> Option<~[u8]> {
+    pub fn lpop_bytes(&mut self, key: &str) -> Option<Vec<u8>> {
         match self.execute("LPOP", [StrArg(key)]) {
             Data(payload) => Some(payload),
             _ => None,
@@ -854,9 +888,9 @@ impl Connection {
     }
 
     #[inline]
-    pub fn lpop(&mut self, key: &str) -> Option<~str> {
+    pub fn lpop(&mut self, key: &str) -> Option<String> {
         match self.lpop_bytes(key) {
-            Some(x) => from_utf8_owned(x),
+            Some(x) => match String::from_utf8(x) { Ok(s) => Some(s), _ => None },
             None => None,
         }
     }
@@ -864,7 +898,7 @@ impl Connection {
     #[inline]
     pub fn lpop_as<T: FromStr>(&mut self, key: &str) -> Option<T> {
         match self.lpop(key) {
-            Some(x) => from_str(x),
+            Some(x) => from_str(x.as_slice()),
             None => None,
         }
     }
@@ -898,22 +932,22 @@ impl Connection {
     }
 
     #[inline]
-    pub fn lrange_bytes(&mut self, key: &str, start: i64, end: i64) -> ~[~[u8]] {
+    pub fn lrange_bytes(&mut self, key: &str, start: i64, end: i64) -> Vec<Vec<u8>> {
         value_to_byte_list(self.execute("LRANGE", [StrArg(key), IntArg(start), IntArg(end)]))
     }
 
     #[inline]
-    pub fn lrange(&mut self, key: &str, start: i64, end: i64) -> ~[~str] {
+    pub fn lrange(&mut self, key: &str, start: i64, end: i64) -> Vec<String> {
         let items = self.lrange_bytes(key, start, end);
-        items.move_iter().map(|x| from_utf8_owned(x).unwrap_or(~"")).to_owned_vec()
+        iter_to_vec(items.move_iter().map(|x| String::from_utf8(x).unwrap_or("".to_string())))//.to_owned_vec()
     }
 
     #[inline]
-    pub fn lrange_as<T: FromStr>(&mut self, key: &str, start: i64, end: i64) -> ~[T] {
+    pub fn lrange_as<T: FromStr>(&mut self, key: &str, start: i64, end: i64) -> Vec<T> {
         let items = self.lrange(key, start, end);
-        let mut rv = ~[];
+        let mut rv = vec![];
         for item in items.move_iter() {
-            match from_str(item) {
+            match from_str(item.as_slice()) {
                 Some(x) => { rv.push(x); }
                 None => {}
             };
@@ -958,7 +992,7 @@ impl Connection {
     }
 
     #[inline]
-    pub fn rpop_bytes(&mut self, key: &str) -> Option<~[u8]> {
+    pub fn rpop_bytes(&mut self, key: &str) -> Option<Vec<u8>> {
         match self.execute("RPOP", [StrArg(key)]) {
             Data(payload) => Some(payload),
             _ => None,
@@ -966,9 +1000,9 @@ impl Connection {
     }
 
     #[inline]
-    pub fn rpop(&mut self, key: &str) -> Option<~str> {
+    pub fn rpop(&mut self, key: &str) -> Option<String> {
         match self.rpop_bytes(key) {
-            Some(x) => from_utf8_owned(x),
+            Some(x) => match String::from_utf8(x) { Ok(s) => Some(s), _ => None },
             None => None,
         }
     }
@@ -976,28 +1010,28 @@ impl Connection {
     #[inline]
     pub fn rpop_as<T: FromStr>(&mut self, key: &str) -> Option<T> {
         match self.rpop(key) {
-            Some(x) => from_str(x),
+            Some(x) => from_str(x.as_slice()),
             None => None,
         }
     }
 
     #[inline]
-    pub fn rpoplpush_bytes(&mut self, src: &str, dst: &str, timeout: f32) -> Option<~[u8]> {
+    pub fn rpoplpush_bytes(&mut self, src: &str, dst: &str, timeout: f32) -> Option<Vec<u8>> {
         let mut timeout_s = timeout as i64;
         if timeout_s <= 0 {
             timeout_s = 0;
         }
         match self.execute("RPOPLPUSH", [StrArg(src), StrArg(dst),
                                          IntArg(timeout_s)]) {
-            Data(ref payload) => Some(payload.to_owned()),
+            Data(ref payload) => Some(payload.to_vec()),
             _ => None,
         }
     }
 
     #[inline]
-    pub fn rpoplpush(&mut self, src: &str, dst: &str, timeout: f32) -> Option<~str> {
+    pub fn rpoplpush(&mut self, src: &str, dst: &str, timeout: f32) -> Option<String> {
         match self.rpoplpush_bytes(src, dst, timeout) {
-            Some(x) => from_utf8_owned(x),
+            Some(x) => match String::from_utf8(x) { Ok(s) => Some(s), _ => None },
             None => None,
         }
     }
@@ -1042,8 +1076,8 @@ impl Connection {
 
     #[inline]
     pub fn hdel_many(&mut self, keys: &[&str]) -> uint {
-        let args = keys.iter().map(|&x| StrArg(x)).to_owned_vec();
-        match self.execute("HDEL", args) {
+        let args = iter_to_vec(keys.iter().map(|&x| StrArg(x)));//.to_owned_vec();
+        match self.execute("HDEL", args.as_slice()) {
             Int(x) => x as uint,
             _ => 0,
         }
@@ -1058,7 +1092,7 @@ impl Connection {
     }
 
     #[inline]
-    pub fn hget_bytes(&mut self, key: &str, field: &str) -> Option<~[u8]> {
+    pub fn hget_bytes(&mut self, key: &str, field: &str) -> Option<Vec<u8>> {
         match self.execute("HGET", [StrArg(key), StrArg(field)]) {
             Data(x) => Some(x),
             _ => None,
@@ -1066,9 +1100,9 @@ impl Connection {
     }
 
     #[inline]
-    pub fn hget(&mut self, key: &str, field: &str) -> Option<~str> {
+    pub fn hget(&mut self, key: &str, field: &str) -> Option<String> {
         match self.hget_bytes(key, field) {
-            Some(x) => from_utf8_owned(x),
+            Some(x) => match String::from_utf8(x) { Ok(s) => Some(s), _ => None },
             None => None,
         }
     }
@@ -1076,16 +1110,16 @@ impl Connection {
     #[inline]
     pub fn hget_as<T: FromStr>(&mut self, key: &str, field: &str) -> Option<T> {
         match self.hget(key, field) {
-            Some(x) => from_str(x),
+            Some(x) => from_str(x.as_slice()),
             None => None,
         }
     }
 
     #[inline]
-    pub fn hgetall_bytes(&mut self, key: &str, field: &str) -> ~[~[u8]] {
+    pub fn hgetall_bytes(&mut self, key: &str, field: &str) -> Vec<Vec<u8>> {
         match self.execute("HGETALL", [StrArg(key), StrArg(field)]) {
             Bulk(items) => {
-                let mut rv = ~[];
+                let mut rv = vec![];
                 for item in items.move_iter() {
                     match item {
                         Data(x) => { rv.push(x); }
@@ -1094,21 +1128,21 @@ impl Connection {
                 }
                 rv
             }
-            _ => ~[],
+            _ => vec![],
         }
     }
 
     #[inline]
-    pub fn hgetall(&mut self, key: &str, field: &str) -> ~[~str] {
-        self.hgetall_bytes(key, field).move_iter()
-            .map(|x| from_utf8_owned(x).unwrap_or(~"")).to_owned_vec()
+    pub fn hgetall(&mut self, key: &str, field: &str) -> Vec<String> {
+        iter_to_vec(self.hgetall_bytes(key, field).move_iter()
+            .map(|x| String::from_utf8(x).unwrap_or("".to_string())))//.to_owned_vec()
     }
 
     #[inline]
-    pub fn hgetall_as<T: FromStr>(&mut self, key: &str, field: &str) -> ~[T] {
-        let mut rv = ~[];
+    pub fn hgetall_as<T: FromStr>(&mut self, key: &str, field: &str) -> Vec<T> {
+        let mut rv = vec![];
         for item in self.hgetall(key, field).move_iter() {
-            match from_str(item) {
+            match from_str(item.as_slice()) {
                 Some(x) => { rv.push(x); }
                 None => {}
             }
@@ -1136,7 +1170,7 @@ impl Connection {
     }
 
     #[inline]
-    pub fn hkeys(&mut self, key: &str) -> ~[~str] {
+    pub fn hkeys(&mut self, key: &str) -> Vec<String> {
         let resp = self.execute("HKEYS", [StrArg(key)]);
         value_to_string_list(resp)
     }
@@ -1180,29 +1214,29 @@ impl Connection {
     }
 
     #[inline]
-    pub fn hscan_bytes<'a>(&'a mut self, key: &'a str, pattern: &'a str) -> ScanIterator<'a, ~[u8]> {
+    pub fn hscan_bytes<'a>(&'a mut self, key: &'a str, pattern: &'a str) -> ScanIterator<'a, Vec<u8>> {
         ScanIterator {
             con: self,
             cmd: "HSCAN",
-            pre_args: ~[StrArg(key)],
-            post_args: ~[StrArg("MATCH"), StrArg(pattern)],
+            pre_args: vec!(StrArg(key)),
+            post_args: vec!(StrArg("MATCH"), StrArg(pattern)),
             cursor: 0,
             conv_func: |value| value_to_bytes(value),
-            buffer: ~[],
+            buffer: vec![],
             end: false,
         }
     }
 
     #[inline]
-    pub fn hscan<'a>(&'a mut self, key: &'a str, pattern: &'a str) -> ScanIterator<'a, ~str> {
+    pub fn hscan<'a>(&'a mut self, key: &'a str, pattern: &'a str) -> ScanIterator<'a, String> {
         ScanIterator {
             con: self,
             cmd: "HSCAN",
-            pre_args: ~[StrArg(key)],
-            post_args: ~[StrArg("MATCH"), StrArg(pattern)],
+            pre_args: vec!(StrArg(key)),
+            post_args: vec!(StrArg("MATCH"), StrArg(pattern)),
             cursor: 0,
-            conv_func: |value| Some(string_value_convert(value, ~"")),
-            buffer: ~[],
+            conv_func: |value| Some(string_value_convert(value, "".to_string())),
+            buffer: vec![],
             end: false,
         }
     }
@@ -1232,11 +1266,11 @@ impl Connection {
     }
 
     #[inline]
-    pub fn sdiff_bytes(&mut self, keys: &[&str]) -> ~[~[u8]] {
-        let args = keys.iter().map(|&x| StrArg(x)).to_owned_vec();
-        match self.execute("SDIFF", args) {
+    pub fn sdiff_bytes(&mut self, keys: &[&str]) -> Vec<Vec<u8>> {
+        let args = iter_to_vec(keys.iter().map(|&x| StrArg(x)));//.to_owned_vec();
+        match self.execute("SDIFF", args.as_slice()) {
             Bulk(items) => {
-                let mut rv = ~[];
+                let mut rv = vec![];
                 for item in items.move_iter() {
                     match item {
                         Data(x) => { rv.push(x); }
@@ -1245,21 +1279,21 @@ impl Connection {
                 }
                 rv
             }
-            _ => ~[],
+            _ => vec![],
         }
     }
 
     #[inline]
-    pub fn sdiff(&mut self, keys: &[&str]) -> ~[~str] {
-        self.sdiff_bytes(keys).move_iter()
-            .map(|x| from_utf8_owned(x).unwrap_or(~"")).to_owned_vec()
+    pub fn sdiff(&mut self, keys: &[&str]) -> Vec<String> {
+        iter_to_vec(self.sdiff_bytes(keys).move_iter()
+            .map(|x| String::from_utf8(x).unwrap_or("".to_string())))//.to_owned_vec()
     }
 
     #[inline]
-    pub fn sdiff_as<T: FromStr>(&mut self, keys: &[&str]) -> ~[T] {
-        let mut rv = ~[];
+    pub fn sdiff_as<T: FromStr>(&mut self, keys: &[&str]) -> Vec<T> {
+        let mut rv = vec![];
         for item in self.sdiff(keys).move_iter() {
-            match from_str(item) {
+            match from_str(item.as_slice()) {
                 Some(x) => { rv.push(x); }
                 None => {}
             }
@@ -1269,20 +1303,22 @@ impl Connection {
 
     #[inline]
     pub fn sdiffstore(&mut self, dst: &str, keys: &[&str]) -> i64 {
-        let mut args = ~[StrArg(dst)];
-        args.extend(&mut keys.iter().map(|&x| StrArg(x)));
-        match self.execute("SDIFFSTORE", args) {
+        let mut args = iter_to_vec(keys.iter().map(|&x| StrArg(x)));
+        args.insert(0,StrArg(dst));
+//        let mut args = vec![StrArg(dst)];
+//        args.extend(&mut keys.iter().map(|&x| StrArg(x)));
+        match self.execute("SDIFFSTORE", args.as_slice()) {
             Int(x) => x,
             _ => 0,
         }
     }
 
     #[inline]
-    pub fn sinter_bytes(&mut self, keys: &[&str]) -> ~[~[u8]] {
-        let args = keys.iter().map(|&x| StrArg(x)).to_owned_vec();
-        match self.execute("SINTER", args) {
+    pub fn sinter_bytes(&mut self, keys: &[&str]) -> Vec<Vec<u8>> {
+        let args = iter_to_vec(keys.iter().map(|&x| StrArg(x)));//.to_owned_vec();
+        match self.execute("SINTER", args.as_slice()) {
             Bulk(items) => {
-                let mut rv = ~[];
+                let mut rv = vec![];
                 for item in items.move_iter() {
                     match item {
                         Data(x) => { rv.push(x); }
@@ -1291,21 +1327,21 @@ impl Connection {
                 }
                 rv
             }
-            _ => ~[],
+            _ => vec![],
         }
     }
 
     #[inline]
-    pub fn sinter(&mut self, keys: &[&str]) -> ~[~str] {
-        self.sinter_bytes(keys).move_iter()
-            .map(|x| from_utf8_owned(x).unwrap_or(~"")).to_owned_vec()
+    pub fn sinter(&mut self, keys: &[&str]) -> Vec<String> {
+        iter_to_vec(self.sinter_bytes(keys).move_iter()
+            .map(|x| String::from_utf8(x).unwrap_or("".to_string())))//.to_owned_vec()
     }
 
     #[inline]
-    pub fn sinter_as<T: FromStr>(&mut self, keys: &[&str]) -> ~[T] {
-        let mut rv = ~[];
+    pub fn sinter_as<T: FromStr>(&mut self, keys: &[&str]) -> Vec<T> {
+        let mut rv = vec![];
         for item in self.sinter(keys).move_iter() {
-            match from_str(item) {
+            match from_str(item.as_slice()) {
                 Some(x) => { rv.push(x); }
                 None => {}
             }
@@ -1315,9 +1351,11 @@ impl Connection {
 
     #[inline]
     pub fn sinterstore(&mut self, dst: &str, keys: &[&str]) -> i64 {
-        let mut args = ~[StrArg(dst)];
-        args.extend(&mut keys.iter().map(|&x| StrArg(x)));
-        match self.execute("SINTERSTORE", args) {
+        let mut args = iter_to_vec(keys.iter().map(|&x| StrArg(x)));
+        args.insert(0,StrArg(dst));
+        //vec![StrArg(dst)];
+        //args.extend(&mut keys.iter().map(|&x| StrArg(x)));
+        match self.execute("SINTERSTORE", args.as_slice()) {
             Int(x) => x,
             _ => 0,
         }
@@ -1338,51 +1376,51 @@ impl Connection {
     }
 
     #[inline]
-    pub fn smembers_bytes(&mut self, key: &str) -> ~[~[u8]] {
+    pub fn smembers_bytes(&mut self, key: &str) -> Vec<Vec<u8>> {
         let resp = self.execute("SMEMBERS", [StrArg(key)]);
         value_to_byte_list(resp)
     }
 
     #[inline]
-    pub fn smembers(&mut self, key: &str) -> ~[~str] {
+    pub fn smembers(&mut self, key: &str) -> Vec<String> {
         let resp = self.execute("SMEMBERS", [StrArg(key)]);
         value_to_string_list(resp)
     }
 
     #[inline]
-    pub fn sscan_bytes<'a>(&'a mut self, key: &'a str, pattern: &'a str) -> ScanIterator<'a, ~[u8]> {
+    pub fn sscan_bytes<'a>(&'a mut self, key: &'a str, pattern: &'a str) -> ScanIterator<'a, Vec<u8>> {
         ScanIterator {
             con: self,
             cmd: "SSCAN",
-            pre_args: ~[StrArg(key)],
-            post_args: ~[StrArg("MATCH"), StrArg(pattern)],
+            pre_args: vec!(StrArg(key)),
+            post_args: vec!(StrArg("MATCH"), StrArg(pattern)),
             cursor: 0,
             conv_func: |value| value_to_bytes(value),
-            buffer: ~[],
+            buffer: vec![],
             end: false,
         }
     }
 
     #[inline]
-    pub fn sscan<'a>(&'a mut self, key: &'a str, pattern: &'a str) -> ScanIterator<'a, ~str> {
+    pub fn sscan<'a>(&'a mut self, key: &'a str, pattern: &'a str) -> ScanIterator<'a, String> {
         ScanIterator {
             con: self,
             cmd: "SSCAN",
-            pre_args: ~[StrArg(key)],
-            post_args: ~[StrArg("MATCH"), StrArg(pattern)],
+            pre_args: vec!(StrArg(key)),
+            post_args: vec!(StrArg("MATCH"), StrArg(pattern)),
             cursor: 0,
-            conv_func: |value| Some(string_value_convert(value, ~"")),
-            buffer: ~[],
+            conv_func: |value| Some(string_value_convert(value, "".to_string())),
+            buffer: vec![],
             end: false,
         }
     }
 
     #[inline]
-    pub fn sunion_bytes(&mut self, keys: &[&str]) -> ~[~[u8]] {
-        let args = keys.iter().map(|&x| StrArg(x)).to_owned_vec();
-        match self.execute("SUNION", args) {
+    pub fn sunion_bytes(&mut self, keys: &[&str]) -> Vec<Vec<u8>> {
+        let args = iter_to_vec(keys.iter().map(|&x| StrArg(x)));//.to_owned_vec();
+        match self.execute("SUNION", args.as_slice()) {
             Bulk(items) => {
-                let mut rv = ~[];
+                let mut rv = vec![];
                 for item in items.move_iter() {
                     match item {
                         Data(x) => { rv.push(x); }
@@ -1391,21 +1429,21 @@ impl Connection {
                 }
                 rv
             }
-            _ => ~[],
+            _ => vec![],
         }
     }
 
     #[inline]
-    pub fn sunion(&mut self, keys: &[&str]) -> ~[~str] {
-        self.sunion_bytes(keys).move_iter()
-            .map(|x| from_utf8_owned(x).unwrap_or(~"")).to_owned_vec()
+    pub fn sunion(&mut self, keys: &[&str]) -> Vec<String> {
+        iter_to_vec(self.sunion_bytes(keys).move_iter()
+            .map(|x| String::from_utf8(x).unwrap_or("".to_string())))//.to_owned_vec()
     }
 
     #[inline]
-    pub fn sunion_as<T: FromStr>(&mut self, keys: &[&str]) -> ~[T] {
-        let mut rv = ~[];
+    pub fn sunion_as<T: FromStr>(&mut self, keys: &[&str]) -> Vec<T> {
+        let mut rv = vec![];
         for item in self.sunion(keys).move_iter() {
-            match from_str(item) {
+            match from_str(item.as_slice()) {
                 Some(x) => { rv.push(x); }
                 None => {}
             }
@@ -1415,9 +1453,11 @@ impl Connection {
 
     #[inline]
     pub fn sunionstore(&mut self, dst: &str, keys: &[&str]) -> i64 {
-        let mut args = ~[StrArg(dst)];
-        args.extend(&mut keys.iter().map(|&x| StrArg(x)));
-        match self.execute("SUNIONSTORE", args) {
+        let mut args = iter_to_vec(keys.iter().map(|&x| StrArg(x)));
+        args.insert(0,StrArg(dst));
+        //vec!(StrArg(dst));
+        //args.extend(&mut keys.iter().map(|&x| StrArg(x)));
+        match self.execute("SUNIONSTORE", args.as_slice()) {
             Int(x) => x,
             _ => 0,
         }
@@ -1453,7 +1493,7 @@ impl Connection {
     pub fn zcount(&mut self, key: &str, min: RangeBoundary, max: RangeBoundary) -> i64 {
         let min_s = min.to_str();
         let max_s = max.to_str();
-        match self.execute("ZCOUNT", [StrArg(key), StrArg(min_s), StrArg(max_s)]) {
+        match self.execute("ZCOUNT", [StrArg(key), StrArg(min_s.as_slice()), StrArg(max_s.as_slice())]) {
             Int(x) => x,
             _ => 0,
         }
@@ -1488,26 +1528,26 @@ impl Connection {
     // XXX: interstore
 
     #[inline]
-    pub fn zrange_bytes(&mut self, key: &str, start: i64, stop: i64) -> ~[~[u8]] {
+    pub fn zrange_bytes(&mut self, key: &str, start: i64, stop: i64) -> Vec<Vec<u8>> {
         value_to_byte_list(self.execute("ZRANGE",
             [StrArg(key), IntArg(start), IntArg(stop)]))
     }
 
     #[inline]
-    pub fn zrange(&mut self, key: &str, start: i64, stop: i64) -> ~[~str] {
+    pub fn zrange(&mut self, key: &str, start: i64, stop: i64) -> Vec<String> {
         value_to_string_list(self.execute("ZRANGE",
             [StrArg(key), IntArg(start), IntArg(stop)]))
     }
 
-    pub fn zrange_bytes_withscores(&mut self, key: &str, start: i64, stop: i64) -> ~[(~[u8], f32)] {
+    pub fn zrange_bytes_withscores(&mut self, key: &str, start: i64, stop: i64) -> Vec<(Vec<u8>, f32)> {
         value_to_byte_float_tuples(self.execute("ZRANGE",
             [StrArg(key), IntArg(start), IntArg(stop), StrArg("WITHSCORES")]))
     }
 
     #[inline]
-    pub fn zrange_withscores(&mut self, key: &str, start: i64, stop: i64) -> ~[(~str, f32)] {
-        self.zrange_bytes_withscores(key, start, stop).move_iter()
-            .map(|(member, score)| (from_utf8_owned(member).unwrap_or(~""), score)).to_owned_vec()
+    pub fn zrange_withscores(&mut self, key: &str, start: i64, stop: i64) -> Vec<(String, f32)> {
+        iter_to_vec(self.zrange_bytes_withscores(key, start, stop).move_iter()
+            .map(|(member, score)| (String::from_utf8(member).unwrap_or("".to_string()), score)))//.to_owned_vec()
     }
 
     fn zrangebyscore_operation(&mut self, cmd: &str,
@@ -1517,7 +1557,7 @@ impl Connection {
                                limit: Option<(i64, i64)>) -> Value {
         let min_s = min.to_str();
         let max_s = max.to_str();
-        let mut args = ~[StrArg(key), StrArg(min_s), StrArg(max_s)];
+        let mut args = vec!(StrArg(key), StrArg(min_s.as_slice()), StrArg(max_s.as_slice()));
         if withscores {
             args.push(StrArg("WITHSCORES"));
         }
@@ -1528,13 +1568,13 @@ impl Connection {
             },
             None => {}
         }
-        self.execute(cmd, args)
+        self.execute(cmd, args.as_slice())
     }
 
     #[inline]
     pub fn zrangebyscore_bytes(&mut self, key: &str, min: RangeBoundary,
                                max: RangeBoundary,
-                               limit: Option<(i64, i64)>) -> ~[~[u8]] {
+                               limit: Option<(i64, i64)>) -> Vec<Vec<u8>> {
         value_to_byte_list(self.zrangebyscore_operation(
             "ZRANGEBYSCORE", key, min, max, false, limit))
     }
@@ -1542,7 +1582,7 @@ impl Connection {
     #[inline]
     pub fn zrangebyscore(&mut self, key: &str, min: RangeBoundary,
                          max: RangeBoundary,
-                         limit: Option<(i64, i64)>) -> ~[~str] {
+                         limit: Option<(i64, i64)>) -> Vec<String> {
         value_to_string_list(self.zrangebyscore_operation(
             "ZRANGEBYSCORE", key, min, max, false, limit))
     }
@@ -1550,7 +1590,7 @@ impl Connection {
     #[inline]
     pub fn zrangebyscore_bytes_withscores(&mut self, key: &str, min: RangeBoundary,
                                           max: RangeBoundary,
-                                          limit: Option<(i64, i64)>) -> ~[(~[u8], f32)] {
+                                          limit: Option<(i64, i64)>) -> Vec<(Vec<u8>, f32)> {
         value_to_byte_float_tuples(self.zrangebyscore_operation(
             "ZRANGEBYSCORE", key, min, max, true, limit))
     }
@@ -1558,9 +1598,9 @@ impl Connection {
     #[inline]
     pub fn zrangebyscore_withscores(&mut self, key: &str, min: RangeBoundary,
                                     max: RangeBoundary,
-                                    limit: Option<(i64, i64)>) -> ~[(~str, f32)] {
-        self.zrangebyscore_bytes_withscores(key, min, max, limit).move_iter()
-            .map(|(member, score)| (from_utf8_owned(member).unwrap_or(~""), score)).to_owned_vec()
+                                    limit: Option<(i64, i64)>) -> Vec<(String, f32)> {
+        iter_to_vec(self.zrangebyscore_bytes_withscores(key, min, max, limit).move_iter()
+            .map(|(member, score)| (String::from_utf8(member).unwrap_or("".to_string()), score)))//.to_owned_vec()
     }
 
     #[inline]
@@ -1591,9 +1631,11 @@ impl Connection {
 
     #[inline]
     pub fn zrem_bytes_many(&mut self, key: &str, members: &[&[u8]]) -> i64 {
-        let mut args = ~[StrArg(key)];
-        args.extend(&mut members.iter().map(|&x| BytesArg(x)));
-        match self.execute("ZREM", args) {
+        let mut args = iter_to_vec(members.iter().map(|&x| BytesArg(x)));
+        args.insert(0,StrArg(key));
+        //vec!(StrArg(key));
+        //args.extend(&mut members.iter().map(|&x| BytesArg(x)));
+        match self.execute("ZREM", args.as_slice()) {
             Int(x) => x,
             _ => 0,
         }
@@ -1601,35 +1643,35 @@ impl Connection {
 
     #[inline]
     pub fn zrem_many(&mut self, key: &str, members: &[&str]) -> i64 {
-        self.zrem_bytes_many(key, members.iter().map(|&x| x.as_bytes()).to_owned_vec())
+        self.zrem_bytes_many(key, iter_to_vec(members.iter().map(|&x| x.as_bytes())).as_slice())//.to_owned_vec())
     }
 
     // XXX: ZREMRANGEBYRANK ZREMRANGEBYSCORE ZREVRANGE ZREVRANGEBYSCORE ZREVRANK 
 
     #[inline]
-    pub fn zscan_bytes<'a>(&'a mut self, key: &'a str, pattern: &'a str) -> ScanIterator<'a, ~[u8]> {
+    pub fn zscan_bytes<'a>(&'a mut self, key: &'a str, pattern: &'a str) -> ScanIterator<'a, Vec<u8>> {
         ScanIterator {
             con: self,
             cmd: "ZSCAN",
-            pre_args: ~[StrArg(key)],
-            post_args: ~[StrArg("MATCH"), StrArg(pattern)],
+            pre_args: vec!(StrArg(key)),
+            post_args: vec!(StrArg("MATCH"), StrArg(pattern)),
             cursor: 0,
             conv_func: |value| value_to_bytes(value),
-            buffer: ~[],
+            buffer: vec![],
             end: false,
         }
     }
 
     #[inline]
-    pub fn zscan<'a>(&'a mut self, key: &'a str, pattern: &'a str) -> ScanIterator<'a, ~str> {
+    pub fn zscan<'a>(&'a mut self, key: &'a str, pattern: &'a str) -> ScanIterator<'a, String> {
         ScanIterator {
             con: self,
             cmd: "ZSCAN",
-            pre_args: ~[StrArg(key)],
-            post_args: ~[StrArg("MATCH"), StrArg(pattern)],
+            pre_args: vec!(StrArg(key)),
+            post_args: vec!(StrArg("MATCH"), StrArg(pattern)),
             cursor: 0,
-            conv_func: |value| Some(string_value_convert(value, ~"")),
-            buffer: ~[],
+            conv_func: |value| Some(string_value_convert(value, "".to_string())),
+            buffer: vec![],
             end: false,
         }
     }

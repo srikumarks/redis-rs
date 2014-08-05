@@ -14,7 +14,7 @@ impl RedisServer {
     fn new() -> RedisServer {
         let mut process = process::Process::configure(process::ProcessConfig {
             program: "redis-server",
-            args: [~"-"],
+            args: ["-".to_string()],
             stdout: process::Ignored,
             stderr: process::Ignored,
             .. process::ProcessConfig::new()

@@ -1,4 +1,5 @@
-#[macro_escape];
+#[macro_escape]
+#[feature(macro_rules)]
 
 macro_rules! ensure {
     ($expr:expr, $err_result:expr) => (

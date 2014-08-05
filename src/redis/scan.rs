@@ -1,17 +1,37 @@
 use connection::Connection;
 use enums::*;
 
-mod macros;
+macro_rules! ensure {
+    ($expr:expr, $err_result:expr) => (
+        if !($expr) { return $err_result; }
+    )
+}
+
+macro_rules! try_unwrap {
+    ($expr:expr, $err_result:expr) => (
+        match $expr {
+            Some(x) => x,
+            None => { return $err_result },
+        }
+    )
+}
+
+macro_rules! push_byte_format {
+    ($container:expr, $($arg:tt)*) => ({
+        let encoded = format!($($arg)*);
+        push_bytes($container, encoded.as_bytes());
+    })
+}
 
 pub struct ScanIterator<'a, T> {
-    con: &'a mut Connection,
-    cmd: &'static str,
-    pre_args: ~[CmdArg<'a>],
-    post_args: ~[CmdArg<'a>],
-    cursor: i64,
-    conv_func: 'a |Value| -> Option<T>,
-    end: bool,
-    buffer: ~[Value],
+    pub con: &'a mut Connection,
+    pub cmd: &'static str,
+    pub pre_args: Vec<CmdArg<'a>>,
+    pub post_args: Vec<CmdArg<'a>>,
+    pub cursor: i64,
+    pub conv_func: |Value| : 'a -> Option<T>,
+    pub end: bool,
+    pub buffer: Vec<Value>,
 }
 
 
@@ -36,16 +56,16 @@ impl<'a, T> ScanIterator<'a, T> {
             return false;
         }
 
-        let mut args = ~[];
+        let mut args = vec![];
         if self.pre_args.len() > 0 {
-            args.push_all(self.pre_args);
+            args.push_all(self.pre_args.as_slice());
         }
         args.push(IntArg(self.cursor));
         if self.post_args.len() > 0 {
-            args.push_all(self.post_args);
+            args.push_all(self.post_args.as_slice());
         }
 
-        match self.con.execute(self.cmd, args) {
+        match self.con.execute(self.cmd, args.as_slice()) {
             Bulk(items) => {
                 let mut iter = items.move_iter();
                 let new_cursor = (try_unwrap!(iter.next(), false))
