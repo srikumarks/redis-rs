@@ -1,5 +1,4 @@
 #[macro_escape]
-#[feature(macro_rules)]
 
 macro_rules! ensure {
     ($expr:expr, $err_result:expr) => (
@@ -19,6 +18,6 @@ macro_rules! try_unwrap {
 macro_rules! push_byte_format {
     ($container:expr, $($arg:tt)*) => ({
         let encoded = format!($($arg)*);
-        push_bytes($container, encoded.as_bytes());
+        $container.push_all(encoded.as_bytes());
     })
 }

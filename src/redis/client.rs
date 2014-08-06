@@ -24,24 +24,6 @@ macro_rules! try_unwrap {
 }
 
 
-macro_rules! try_unwrap_result {
-    ($expr:expr, $err_result:expr) => (
-        match $expr {
-            Ok(x) => x,
-            Err(_) => { return $err_result },
-        }
-    )
-}
-
-macro_rules! push_byte_format {
-    ($container:expr, $($arg:tt)*) => ({
-        let encoded = format!($($arg)*);
-        push_bytes($container, encoded.as_bytes());
-    })
-}
-
-
-
 pub struct Client {
     addr: SocketAddr,
     db: i64,
